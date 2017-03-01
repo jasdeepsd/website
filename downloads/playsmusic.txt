@@ -1,0 +1,161 @@
+
+/* lab2.c
+ *  Created on: 2016-07-05
+ *      Author: c49lu */
+#include <stdio.h>
+#include "basic_io.h"
+#include "SD_Card.h"
+#include "fat.h"
+#include "Open_I2C.h"
+#include "wm8731.h"
+#include "LCD.h"
+#include <stdio.h>
+
+volatile int EDGE = 0;
+volatile int BTN0_FLAG;
+volatile int BTN1_FLAG;
+volatile int BTN2_FLAG;
+volatile int BTN3_FLAG;
+volatile int PLAY_SPEED = 0;
+/*
+UINT16 tmp;  //Create a 16-bit variable to pass to the FIFO
+while(IORD( AUD_FULL_BASE, 0 ) ) {}  //wait until the FIFO is not full
+tmp = ( buffer[ i + 1 ] << 8 ) | ( buffer[ i ] );
+//Package 2 8-bit bytes from the
+ * //sector buffer array into the
+ * //single 16-bit variable tmpIOWR( AUDIO_0_BASE, 0, tmp );
+ * //Write the 16-bit variable tmp to the FIFO where it
+ * //will be processed by the audio CODEC
+*/
+
+//LCD display function
+
+//buttons
+
+//playback modes
+
+//btn ISR
+static void button_ISR( void *context, alt_u32 id )
+{
+	//EDGE is to deal with debounce, only do something when rising edge detected
+	EDGE++;
+	if (EDGE == 1) { //check for rising edge
+	    alt_u8 buttons;
+	    //alt_u8 led_state;
+	    /* Get value from the edge capture register and mask off all bits except the 4 least significant */
+	    buttons = IORD(BUTTON_PIO_BASE, 3);
+	    //0 to stop playing a file
+	    if(buttons == 1)
+	    	BTN0_FLAG = 0x1;
+	    //1 to play playing a file
+	    if(buttons == 2)
+	    	BTN1_FLAG = 0x1;
+	    //2 forward
+	    if(buttons == 4)
+	    	BTN2_FLAG = 0x1;
+	    //3 backward
+	    if(buttons == 8)
+	    	BTN3_FLAG = 0x1;
+	}
+	else if(EDGE == 2)
+		EDGE = 0;
+
+    /* Reset the edge capture register to clear the interrupt */
+    IOWR(BUTTON_PIO_BASE, 3, 0x0);
+
+}
+
+int main()
+{
+	//init
+	SD_card_init();
+	init_mbr();
+	init_bs();
+	LCD_Init();
+	init_audio_codec();
+
+
+	data_file *df = malloc(sizeof(data_file));
+	//buffer that stores the block of data read form SD card
+	BYTE *buff = malloc(sizeof(df->FileSize));
+	int length = 1 + ceil((df->FileSize)/(BPB_BytsPerSec*BPB_SecPerClus));
+	int cc[length];
+
+
+	/*---interface stuff---*/
+	alt_irq_register( BUTTON_PIO_IRQ, (void*)0, button_ISR );
+	IOWR(BUTTON_PIO_BASE, 3, 0x0);
+	IOWR(BUTTON_PIO_BASE, 2, 0xe);
+
+	UINT16 tmp;
+	int i,j,k;
+
+	while(1){
+
+		//0 to stop playing a file
+		if(BTN0_FLAG == 0x1){
+			//cc[length]={0};
+			//build_cluster_chain(cc,length, df);
+			BTN0_FLAG = 0x0;
+		}
+		//1 to play playing a file
+		if(BTN1_FLAG == 0x1){
+			//go to beginning of song
+			if (file_number > 1)
+				file_number --;
+			//search_for_filetype("WAV", df, 0, 1);
+			LCD_Display(df->Name, PLAY_SPEED);
+			//build cluster chain for a .wav file
+			build_cluster_chain(cc,length, df);
+
+			//loop through every sector
+			for(i=0; i< df->FileSize/BPB_BytsPerSec; i+= 1){
+				//read sectors of data from a file
+				get_rel_sector(df, buff, cc, i);
+				//loop through every byte j+=2 for ch1 & ch2
+				k=0;
+				for(j=0; j<BPB_BytsPerSec; j+=2){
+					while(IORD(AUD_FULL_BASE,0)){}
+					//package 2 8-bit bytes from the sector buffer array into the single 16-bit variable tmp
+					tmp=(buff[j+1] << 8 ) | (buff[j]);
+
+					IOWR(AUDIO_0_BASE,0,tmp);
+					//printf("%d \n",j);
+					k+=1;
+					if(PLAY_SPEED ==4 & k % 2 == 0)
+						j+=4;
+					if(PLAY_SPEED ==1 & k % 4 == 0){
+						j-=4;
+					}
+				}
+			}
+			BTN1_FLAG = 0x0;
+		}
+		//2 forward
+		if(BTN2_FLAG == 0x1){
+			//go to next song in queue
+			search_for_filetype("WAV", df, 0, 1);
+			//display the name and play speed of the song currently playing
+			LCD_Display(df->Name, PLAY_SPEED);
+			//reset the button flag
+			BTN2_FLAG = 0x0;
+		}
+		//3 backward
+		if(BTN3_FLAG == 0x1){
+			file_number -=2;//one to go to beginning of song and the other to get to previous song
+			//go to previous song in queue, if hit the head will stay at first song
+			search_for_filetype("WAV", df, 0, 1);
+			//display the name and play speed of the song currently playing
+			LCD_Display(df->Name, PLAY_SPEED);
+			//reset the button flag
+			BTN3_FLAG = 0x0;
+		}
+}
+
+	return 0;
+}
+
+//need to use stereo audio
+//some sound files on the card has distinct sounds in each channel, we can use those to test stereo
+//can check by putting 2 speakers about 1 foot apart and see if you get 2 channels
+
